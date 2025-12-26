@@ -59,7 +59,7 @@ def solve_problem(problem_text, fewshot_text):
     """
     response = client.responses.create(
         model=MODEL,
-        instructions="You are a math assistant. Be sure to write a final answer after 'FINAL:'.",
+        instructions="You are a math assistant. Be sure to write a final answer after 'FINAL:'. Think step by step.",
         input=f"The following is a sample answer.\n\n{fewshot_text}\n\n ---\nPlease solve the following problem.\n\nproblem:\n{problem_text}",
         temperature=0.0,
     )
