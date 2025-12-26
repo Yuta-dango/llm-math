@@ -29,11 +29,16 @@ def load_jsonl(path):
     return data
 
 
-def build_fewshot_prompt(train_data, max_examples=5):
+def build_fewshot_prompt(train_data, type, max_examples=5):
     """
     few-shot 用のテキストを生成
     """
-    examples = train_data[:max_examples]
+    examples = []
+    for d in train_data:
+        if d["type"] == type:
+            examples.append(d)
+            if len(examples) >= max_examples:
+                break
     parts = []
     for ex in examples:
         parts.append(
@@ -71,16 +76,17 @@ def main():
     train_data = load_jsonl(TRAIN_PATH)
     test_data = load_jsonl(TEST_PATH)
 
-    # few-shot プロンプト生成
-    fewshot_text = build_fewshot_prompt(train_data, MAX_FEWSHOT)
-
     predictions = []
 
     for item in test_data:
         problem_id = item["id"]
         problem_text = item["problem"]
+        problem_type = item["type"]
 
         print(f"Solving id={problem_id} ...")
+
+        # few-shot プロンプト生成
+        fewshot_text = build_fewshot_prompt(train_data, problem_type, MAX_FEWSHOT)
 
         answer_text = solve_problem(problem_text, fewshot_text)
 
