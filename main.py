@@ -31,11 +31,16 @@ def load_jsonl(path):
     return data
 
 
-def build_fewshot_prompt(train_data, max_examples=5):
+def build_fewshot_prompt(train_data, type, max_examples=5):
     """
     few-shot 用のテキストを生成
     """
-    examples = train_data[:max_examples]
+    examples = []
+    for d in train_data:
+        if d["type"] == type:
+            examples.append(d)
+            if len(examples) >= max_examples:
+                break
     parts = []
     for ex in examples:
         parts.append(
@@ -63,7 +68,7 @@ async def solve_item(item, fewshot_text, semaphore):
         try:
             response = await client.responses.create(
                 model=MODEL,
-                instructions="You are a math assistant. Be sure to write a final answer after 'FINAL:'.",
+                instructions="You are a math assistant. Be sure to write a final answer after 'FINAL:'. Think step by step.",
                 input=f"The following is a sample answer.\n\n{fewshot_text}\n\n ---\nPlease solve the following problem.\n\nproblem:\n{problem_text}",
                 temperature=0.0,
             )
@@ -86,14 +91,11 @@ async def main():
     train_data = load_jsonl(TRAIN_PATH)
     test_data = load_jsonl(TEST_PATH)
 
-    # few-shot プロンプト生成
-    fewshot_text = build_fewshot_prompt(train_data, MAX_FEWSHOT)
-
     # 同時実行リクエストを制限
     semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
 
     # タスクの作成
-    tasks = [solve_item(item, fewshot_text, semaphore) for item in test_data]
+    tasks = [solve_item(item, build_fewshot_prompt(train_data, item["type"], MAX_FEWSHOT), semaphore) for item in test_data]
 
     # 並列実行
     predictions = await asyncio.gather(*tasks)
