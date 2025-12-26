@@ -1,7 +1,8 @@
-from openai import OpenAI
+import asyncio
 import json
 from pathlib import Path
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
 
 load_dotenv()
 
@@ -15,8 +16,9 @@ OUTPUT_PATH = here / "my_preds.jsonl"
 
 MODEL = "gpt-4o-mini"
 MAX_FEWSHOT = 5     # トークン超過を防ぐため
+CONCURRENT_REQUESTS = 20  # 同時に送るリクエスト数
 
-client = OpenAI()
+client = AsyncOpenAI()
 
 # =========================
 # ユーティリティ
@@ -48,25 +50,38 @@ FINAL: {ex["answer"]}
     return "\n---\n".join(parts)
 
 
-def solve_problem(problem_text, fewshot_text):
+async def solve_item(item, fewshot_text, semaphore):
     """
-    単一問題を ChatGPT に解かせる（Responses API 使用）
+    単一問題を ChatGPT に解かせる（非同期）
     """
-    response = client.responses.create(
-        model=MODEL,
-        instructions="You are a math assistant. Be sure to write a final answer after 'FINAL:'.",
-        input=f"The following is a sample answer.\n\n{fewshot_text}\n\n ---\nPlease solve the following problem.\n\nproblem:\n{problem_text}",
-        temperature=0.0,
-    )
+    async with semaphore:
+        problem_id = item["id"]
+        problem_text = item["problem"]
 
-    # Responses API では output_text にまとめて入る
-    return response.output_text
+        print(f"Solving id={problem_id} ...")
+
+        try:
+            response = await client.responses.create(
+                model=MODEL,
+                instructions="You are a math assistant. Be sure to write a final answer after 'FINAL:'.",
+                input=f"The following is a sample answer.\n\n{fewshot_text}\n\n ---\nPlease solve the following problem.\n\nproblem:\n{problem_text}",
+                temperature=0.0,
+            )
+            answer_text = response.output_text
+        except Exception as e:
+            print(f"Error solving id={problem_id}: {e}")
+            answer_text = f"Error: {e}"
+
+        return {
+            "id": problem_id,
+            "prediction": answer_text,
+        }
 
 
 # =========================
 # メイン処理
 # =========================
-def main():
+async def main():
     # データ読み込み
     train_data = load_jsonl(TRAIN_PATH)
     test_data = load_jsonl(TEST_PATH)
@@ -74,22 +89,17 @@ def main():
     # few-shot プロンプト生成
     fewshot_text = build_fewshot_prompt(train_data, MAX_FEWSHOT)
 
-    predictions = []
+    # 同時実行リクエストを制限
+    semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
 
-    for item in test_data:
-        problem_id = item["id"]
-        problem_text = item["problem"]
+    # タスクの作成
+    tasks = [solve_item(item, fewshot_text, semaphore) for item in test_data]
 
-        print(f"Solving id={problem_id} ...")
+    # 並列実行
+    predictions = await asyncio.gather(*tasks)
 
-        answer_text = solve_problem(problem_text, fewshot_text)
-
-        predictions.append(
-            {
-                "id": problem_id,
-                "prediction": answer_text,
-            }
-        )
+    # id順にソート（非同期実行だと順番が入れ替わることがあるため）
+    predictions.sort(key=lambda x: x["id"])
 
     # jsonl 形式で出力
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
@@ -99,15 +109,5 @@ def main():
     print(f"Finished. Output written to {OUTPUT_PATH}")
 
 
-# def main():
-#     client = OpenAI()
-#     response = client.responses.create(
-#         model="gpt-4o-mini",
-#         instructions="Answer the question.",
-#         input="Where is the capital of Japan?"
-#     )
-#     print(response.output_text)
-
-
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
