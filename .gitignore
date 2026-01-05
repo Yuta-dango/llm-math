@@ -1,2 +1,3 @@
 my_preds.jsonl
 .env
+__pycache__/

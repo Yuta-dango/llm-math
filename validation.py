@@ -1,194 +1,153 @@
+import asyncio
 import json
 import random
-import re
 from pathlib import Path
-from dotenv import load_dotenv
-from openai import OpenAI
+from collections import defaultdict
 
-# .envの読み込み
-load_dotenv()
+# main.py から必要な関数・変数をインポート
+from main import (
+    load_jsonl, 
+    build_fewshot_prompt, 
+    solve_item, 
+    TRAIN_PATH, 
+    MAX_FEWSHOT
+)
 
-# =========================
-# 設定
-# =========================
-here = Path(__file__).parent
-# NOTE: 評価(Validation)を行うためには正解ラベルが必要なため、
-# "train"と名付けられた正解付きデータセットを使用し、これを内部で分割します。
-DATA_PATH = here / "math_level12_easy_train100_student_with_answer_solution.jsonl"
-OUTPUT_PATH = here / "validation_results.jsonl"
+# 採点用ロジックをインポート
+from score_math_test import extract_final_answer, equivalent
 
-MODEL = "gpt-4o-mini"
-MAX_FEWSHOT = 5       # Few-shotに使用する例示の数
-TRAIN_RATIO = 0.8     # 学習データの割合 (80:20分割)
-SEED = 42             # 再現性のための乱数シード
+# 出力ファイル設定
+VALIDATION_OUTPUT = Path(__file__).parent / "validation_leave_one_out.jsonl"
+CONCURRENT_REQUESTS = 5  # 検証用なので安全のため少し絞る
 
-client = OpenAI()
+async def run_validation():
+    print("--- Leave-One-Out Validation Start ---")
 
-# =========================
-# ユーティリティ関数
-# =========================
-def load_jsonl(path):
-    data = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            data.append(json.loads(line))
-    return data
+    # 1. データ準備 (TRAINデータを全件読み込み)
+    full_data = load_jsonl(TRAIN_PATH)
+    print(f"Data Loaded: {len(full_data)} items")
 
-def build_fewshot_prompt(train_examples):
-    """
-    Trainデータセットの中からFew-shot用のテキストを生成
-    """
-    parts = []
-    for ex in train_examples:
-        # prompt構成: 問題 -> 解法 -> FINAL: 答え
-        parts.append(
-            f"""problem:
-{ex["problem"]}
+    # Typeごとにデータをグループ化（高速化用）
+    train_by_type = defaultdict(list)
+    data_map = {}  # IDから正解データなどを引くための辞書
+    for item in full_data:
+        train_by_type[item["type"]].append(item)
+        data_map[item["id"]] = item
 
-answer:
-{ex["solution"]}
-FINAL: {ex["answer"]}
-"""
-        )
-    return "\n---\n".join(parts)
-
-def extract_final_answer(text):
-    """
-    LLMの出力から 'FINAL: ' 以降の答え部分を抽出する
-    """
-    # "FINAL:" または "FINAL Answer:" などのパターンに対応
-    match = re.search(r"FINAL:\s*(.*)", text, re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
-    return text.strip()
-
-def solve_problem(problem_text, fewshot_text):
-    """
-    OpenAI APIを使って問題を解く
-    """
-    prompt = f"The following are sample answers.\n\n{fewshot_text}\n\n ---\nPlease solve the following problem. Be sure to write the final answer after 'FINAL:'.\n\nproblem:\n{problem_text}"
+    # 2. タスク生成 (自分以外 & Type一致 のFew-shotを選択)
+    print("Generating tasks with Type-Matching & Leave-One-Out strategy...")
     
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "You are a math assistant."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.0
-    )
-    return response.choices[0].message.content
+    semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
+    tasks = []
 
-def is_correct(pred, true_val):
-    """
-    正解判定ロジック
-    単純な文字列一致だけでなく、数値的な等価性などを考慮する場合ここにロジックを追加
-    """
-    # 簡易的な正規化（空白削除、小文字化）
-    p = str(pred).strip().lower()
-    t = str(true_val).strip().lower()
-    
-    # 数値としての比較を試みる (例: "12.0" == "12")
-    try:
-        return float(p) == float(t)
-    except ValueError:
-        pass
+    for target in full_data:
+        # A. 同じTypeの候補を取得
+        candidates = train_by_type.get(target["type"], full_data)
         
-    return p == t
+        # B. 自分自身(ID)を除外
+        valid_candidates = [c for c in candidates if c["id"] != target["id"]]
+        
+        # (万が一、同じTypeの他データが0件なら、全体から自分以外を選ぶフォールバック)
+        if not valid_candidates:
+            valid_candidates = [c for c in full_data if c["id"] != target["id"]]
 
-def score_math_test(y_true, y_pred, raw_preds=None):
-    """
-    精度評価を行い、結果を表示する関数
-    """
-    total = len(y_true)
-    correct_count = 0
+        # C. ランダムにサンプリング
+        k = min(len(valid_candidates), MAX_FEWSHOT)
+        selected_shots = random.sample(valid_candidates, k)
+
+        # D. プロンプト作成
+        fewshot_text = build_fewshot_prompt(selected_shots)
+
+        # E. タスク追加
+        tasks.append(solve_item(target, fewshot_text, semaphore))
+
+    # 3. 推論実行 (API)
+    print(f"Running Inference on {len(tasks)} items...")
+    raw_results = await asyncio.gather(*tasks)
+    print("\nInference Finished! (API通信完了)")
+
+    # 4. 採点 & 集計
+    print("Evaluating (SymPy)...")
     
-    for i in range(total):
-        # 抽出した答え(y_pred)と正解(y_true)を比較
-        if is_correct(y_pred[i], y_true[i]):
-            correct_count += 1
+    final_results = []
     
-    accuracy = correct_count / total if total > 0 else 0
+    # 全体スコア
+    total_correct = 0
+    total_count = 0
     
+    # Type別スコア集計用
+    type_stats = defaultdict(lambda: {"correct": 0, "total": 0})
+
+    # 結果はID順とは限らないためループで処理
+    # (raw_resultsはAPIが返した順序のリスト)
+    # ただし今回はasyncio.gatherの引数順(tasks順)に返ってくる仕様だが、
+    # 安全のため data_map から正解情報を引く
+    
+    for i, res in enumerate(raw_results):
+        item_id = res["id"]
+        original_item = data_map[item_id]
+        
+        gold = original_item["answer"]
+        pred_raw = res["prediction"]
+        item_type = original_item.get("type", "Unknown")
+
+        # 進捗表示
+        print(f"[{i+1}/{len(full_data)}] ID:{item_id} ({item_type}) ...", end="", flush=True)
+
+        # 回答抽出
+        pred_clean = extract_final_answer(pred_raw)
+
+        # 正誤判定
+        is_ok = equivalent(gold, pred_clean)
+
+        if is_ok:
+            total_correct += 1
+            type_stats[item_type]["correct"] += 1
+            print(" OK")
+        else:
+            print(f" NG (Gold:{gold} vs Pred:{pred_clean})")
+
+        type_stats[item_type]["total"] += 1
+        total_count += 1
+
+        # 結果行を作成
+        result_row = {
+            "id": item_id,
+            "type": item_type,
+            "is_correct": is_ok,
+            "gold_answer": gold,
+            "pred_answer": pred_clean,
+            "raw_output": pred_raw,
+            "used_prompt_strategy": "Leave-One-Out TypeMatch"
+        }
+        final_results.append(result_row)
+
+    # 5. ファイル保存
+    # ID順にソートして保存
+    final_results.sort(key=lambda x: x["id"])
+    with open(VALIDATION_OUTPUT, "w", encoding="utf-8") as f:
+        for row in final_results:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    # 6. 最終レポート表示
     print("\n" + "="*40)
-    print("      SCORE MATH TEST REPORT      ")
+    print(f" VALIDATION SUMMARY (N={total_count})")
     print("="*40)
-    print(f"Total Validation Samples : {total}")
-    print(f"Correct Predictions      : {correct_count}")
-    print(f"Accuracy                 : {accuracy:.2%}")
-    print("="*40 + "\n")
     
-    return accuracy
-
-# =========================
-# メイン処理
-# =========================
-def main():
-    print(f"Loading data from {DATA_PATH} ...")
-    full_data = load_jsonl(DATA_PATH)
+    # 全体精度
+    acc = total_correct / total_count if total_count > 0 else 0
+    print(f"Total Accuracy: {acc:.2%} ({total_correct}/{total_count})\n")
     
-    # --- 1. データの分割 (80:20) ---
-    random.seed(SEED)
-    random.shuffle(full_data)
-    
-    split_idx = int(len(full_data) * TRAIN_RATIO)
-    train_set = full_data[:split_idx]
-    val_set = full_data[split_idx:]
-    
-    print(f"Data Split -> Train: {len(train_set)}, Validation: {len(val_set)}")
-
-    # --- 2. Few-shotプロンプトの構築 ---
-    # Trainセットの中から最大MAX_FEWSHOT個だけ例示として使う
-    fewshot_examples = train_set[:MAX_FEWSHOT]
-    fewshot_text = build_fewshot_prompt(fewshot_examples)
-    
-    print(f"Few-shot prompt prepared with {len(fewshot_examples)} examples.")
-
-    # --- 3. 検証実行 (Validation Loop) ---
-    y_true = []       # 正解リスト
-    y_pred_raw = []   # LLMの生出力
-    y_pred_extracted = [] # 抽出した答え
-    
-    results = []
-
-    print("Starting validation loop...")
-    for i, item in enumerate(val_set):
-        problem_text = item["problem"]
-        true_answer = item["answer"] # 正解データには "answer" がある前提
+    # Type別精度
+    print("--- By Type ---")
+    for t_type, stats in sorted(type_stats.items()):
+        c = stats["correct"]
+        t = stats["total"]
+        type_acc = c / t if t > 0 else 0
+        print(f"{t_type.ljust(15)}: {type_acc:.2%} ({c}/{t})")
         
-        # LLM推論
-        raw_output = solve_problem(problem_text, fewshot_text)
-        
-        # 答えの抽出
-        extracted_answer = extract_final_answer(raw_output)
-        
-        # リストに保存
-        y_true.append(true_answer)
-        y_pred_raw.append(raw_output)
-        y_pred_extracted.append(extracted_answer)
-        
-        # ログ保存用データ作成
-        is_acc = is_correct(extracted_answer, true_answer)
-        results.append({
-            "id": item.get("id", i),
-            "problem": problem_text,
-            "true_answer": true_answer,
-            "prediction_raw": raw_output,
-            "prediction_extracted": extracted_answer,
-            "is_correct": is_acc
-        })
-        
-        # 進捗表示 (例: 10件ごと)
-        if (i + 1) % 5 == 0:
-            print(f"Processed {i + 1}/{len(val_set)} samples...")
-
-    # --- 4. 結果保存 ---
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-        for res in results:
-            f.write(json.dumps(res, ensure_ascii=False) + "\n")
-    print(f"Detailed results saved to {OUTPUT_PATH}")
-
-    # --- 5. 精度評価 ---
-    score_math_test(y_true, y_pred_extracted)
+    print("="*40)
+    print(f"Saved details to: {VALIDATION_OUTPUT.name}")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(run_validation())
