@@ -1,3 +1,12 @@
-my_preds.jsonl
+# Environment
 .env
+.venv/
 __pycache__/
+
+# Output directories
+output/
+
+# Legacy files (old versions)
+legacy/
+
+.github/
