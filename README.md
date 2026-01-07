@@ -53,6 +53,50 @@ cp .env.example .env
 
 プロジェクトの設定は `config.yaml` で管理されます。
 
+```yaml
+# 実験メモ
+experiment_memo: "Baseline experiment with Type-Matching few-shot selection"
+
+# データ・出力ディレクトリ
+data_dir: data
+output_dir: output
+
+# データファイル
+train_file: train.jsonl
+test_file: test.jsonl
+
+# モデル設定
+model: gpt-4o-mini
+temperature: 0.0
+
+# Few-shot設定
+max_fewshot: 5
+
+# 並行実行設定
+concurrent_requests: 20
+validation_concurrent_requests: 20
+
+# プロンプト設定
+prompt:
+  # デフォルト（Geometry以外）のプロンプト
+  default:
+    instructions: "構造化されたアプローチ (UNDERSTAND → PLAN → EXECUTE → VERIFY)"
+    input_template: "..."
+  
+  # Geometry専用のプロンプト
+  geometry:
+    instructions: "幾何専用の体系的アプローチ (IDENTIFY → VISUALIZE → THEOREM → CALCULATE → VERIFY)"
+    input_template: "..."
+```
+
+**プロンプト設定について**:
+- `default`: Geometry以外の問題タイプに使用される標準プロンプト
+  - UNDERSTAND → PLAN → EXECUTE → VERIFY の4ステップアプローチ
+- `geometry`: Geometry問題専用の特化プロンプト
+  - IDENTIFY → VISUALIZE → THEOREM → CALCULATE → VERIFY の5ステップ
+  - 角度の検証、相似三角形の対応関係の明示など、幾何特有のチェック項目を含む
+- 問題の`type`フィールドが`"Geometry"`の場合、自動的にgeometryプロンプトが使用される
+
 ## 使い方
 
 ### Leave-One-Out バリデーション

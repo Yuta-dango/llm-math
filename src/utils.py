@@ -35,6 +35,41 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
+def load_prompt_from_file(file_path: str, backup_to_dir: Path = None) -> str:
+    """プロンプトファイルからテキストを読み込む。
+
+    Args:
+        file_path: プロジェクトルートからの相対パス。
+        backup_to_dir: バックアップ先のディレクトリ（指定時のみバックアップ）。
+
+    Returns:
+        読み込んだプロンプトテキスト。
+    """
+    current_dir = Path(__file__).parent
+    full_path = current_dir.parent / file_path
+
+    if not full_path.exists():
+        raise FileNotFoundError(f"Prompt file not found at {full_path}")
+
+    # 読み込み
+    with open(full_path, "r", encoding="utf-8") as f:
+        text = f.read().strip()
+
+    # バックアップが指定されている場合のみコピー保存
+    if backup_to_dir:
+        try:
+            backup_to_dir.mkdir(parents=True, exist_ok=True)
+            dest_name = full_path.name
+            from shutil import copy2
+
+            copy2(full_path, backup_to_dir / dest_name)
+            logger.info(f"Backed up prompt {full_path.name} to {backup_to_dir / dest_name}")
+        except Exception as e:
+            logger.warning(f"Failed to backup prompt {full_path}: {e}")
+
+    return text
+
+
 config = load_config()
 
 # ロギング設定
@@ -62,6 +97,20 @@ MAX_FEWSHOT = config["max_fewshot"]
 
 # 並行実行設定
 CONCURRENT_REQUESTS = config["concurrent_requests"]
+
+# プロンプト設定（ファイルから読み込み）
+PROMPT_DEFAULT_INSTRUCTIONS = load_prompt_from_file(
+    config["prompt"]["default"]["instructions_file"]
+)
+PROMPT_DEFAULT_INPUT_TEMPLATE = load_prompt_from_file(
+    config["prompt"]["default"]["input_template_file"]
+)
+PROMPT_GEOMETRY_INSTRUCTIONS = load_prompt_from_file(
+    config["prompt"]["geometry"]["instructions_file"]
+)
+PROMPT_GEOMETRY_INPUT_TEMPLATE = load_prompt_from_file(
+    config["prompt"]["geometry"]["input_template_file"]
+)
 
 client = AsyncOpenAI()
 
@@ -115,6 +164,29 @@ def create_timestamped_dir(base_dir: Path, prefix: str = "") -> Path:
     output_dir = base_dir / dir_name
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
+
+
+def backup_prompts_to_output(output_dir: Path) -> None:
+    """使用中のプロンプトファイルをoutputディレクトリにバックアップする。
+
+    Args:
+        output_dir: 出力先ディレクトリ（実行ごとのタイムスタンプディレクトリ）。
+    """
+    prompts_backup_dir = output_dir / "prompts"
+    prompts_backup_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 使用しているプロンプトファイルをコピー
+    prompt_files = [
+        config["prompt"]["default"]["instructions_file"],
+        config["prompt"]["default"]["input_template_file"],
+        config["prompt"]["geometry"]["instructions_file"],
+        config["prompt"]["geometry"]["input_template_file"],
+    ]
+    
+    for file_path in prompt_files:
+        load_prompt_from_file(file_path, backup_to_dir=prompts_backup_dir)
+    
+    logger.info(f"Backed up all prompt files to {prompts_backup_dir}")
 
 
 def save_results_by_type(results: list[dict], output_dir: Path) -> None:
@@ -225,7 +297,7 @@ async def solve_item(item: dict, fewshot_text: str, semaphore) -> dict:
     """単一問題をChatGPTに解かせる（非同期）。
 
     Args:
-        item: 問題データ。'id'と'problem'キーを持つ辞書。
+        item: 問題データ。'id'、'problem'、'type'キーを持つ辞書。
         fewshot_text: few-shotプロンプト文字列。
         semaphore: 並行実行数を制御するセマフォ。
 
@@ -235,14 +307,29 @@ async def solve_item(item: dict, fewshot_text: str, semaphore) -> dict:
     async with semaphore:
         problem_id = item["id"]
         problem_text = item["problem"]
+        problem_type = item.get("type", "")
 
-        logger.info(f"Solving id={problem_id}")
+        logger.info(f"Solving id={problem_id} (type={problem_type})")
+
+        # 問題タイプに応じてプロンプトを切り替え
+        if problem_type == "Geometry":
+            instructions = PROMPT_GEOMETRY_INSTRUCTIONS
+            input_template = PROMPT_GEOMETRY_INPUT_TEMPLATE
+            logger.debug(f"Using Geometry-specific prompt for id={problem_id}")
+        else:
+            instructions = PROMPT_DEFAULT_INSTRUCTIONS
+            input_template = PROMPT_DEFAULT_INPUT_TEMPLATE
+            logger.debug(f"Using default prompt for id={problem_id}")
 
         try:
+            input_text = input_template.format(
+                fewshot_text=fewshot_text,
+                problem_text=problem_text,
+            )
             response = await client.responses.create(
                 model=MODEL,
-                instructions="You are a math assistant. Be sure to write a final answer after 'FINAL:'. Think step by step.",
-                input=f"The following is a sample answer.\n\n{fewshot_text}\n\n ---\nPlease solve the following problem.\n\nproblem:\n{problem_text}",
+                instructions=instructions,
+                input=input_text,
                 temperature=TEMPERATURE,
             )
             answer_text = response.output_text

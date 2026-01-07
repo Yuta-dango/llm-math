@@ -17,6 +17,7 @@ from utils import (
     extract_final_answer,
     equivalent,
     create_timestamped_dir,
+    backup_prompts_to_output,
     save_results_by_type,
     save_evaluation_summary,
     TRAIN_PATH,
@@ -118,6 +119,9 @@ async def run_validation():
     # タイムスタンプ付きディレクトリを作成
     run_dir = create_timestamped_dir(OUTPUT_DIR, prefix="validation_")
     logger.info(f"Saving results to: {run_dir}")
+    
+    # プロンプトファイルをバックアップ
+    backup_prompts_to_output(run_dir)
     
     # タイプ別にファイル分割して保存
     save_results_by_type(final_results, run_dir)

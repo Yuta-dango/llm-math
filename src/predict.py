@@ -15,6 +15,7 @@ from utils import (
     build_fewshot_prompt,
     solve_item,
     create_timestamped_dir,
+    backup_prompts_to_output,
     TRAIN_PATH,
     TEST_PATH,
     OUTPUT_DIR,
@@ -71,6 +72,9 @@ async def run_prediction():
     # タイムスタンプ付きディレクトリを作成
     run_dir = create_timestamped_dir(OUTPUT_DIR, prefix="prediction_")
     logger.info(f"Saving results to: {run_dir}")
+    
+    # プロンプトファイルをバックアップ
+    backup_prompts_to_output(run_dir)
     
     predictions.sort(key=lambda x: x["id"])
     predictions_path = run_dir / "predictions.jsonl"

@@ -1,0 +1,9 @@
+The following is a sample answer.
+
+{fewshot_text}
+
+---
+Please solve the following problem using the structured approach (UNDERSTAND → PLAN → EXECUTE → VERIFY).
+
+problem:
+{problem_text}

@@ -1,0 +1,5 @@
+Solve the following math problem. Think step by step.
+
+# Instructions
+- Be sure to write a final answer after 'FINAL:'. 
+- Do not assume properties unless explicitly stated or mathematically derived.
