@@ -1,0 +1,9 @@
+The following is a sample answer.
+
+{fewshot_text}
+
+ ---
+Please solve the following problem.
+
+problem:
+{problem_text}

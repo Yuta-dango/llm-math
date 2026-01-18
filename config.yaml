@@ -1,0 +1,35 @@
+# LLM Math Project Configuration
+
+# 各実行の目的や変更内容を記録するためのメモ（summary.txtの冒頭に記載される）
+experiment_memo: "Type-specific prompts: Geometry uses systematic 5-step approach (IDENTIFY→VISUALIZE→THEOREM→CALCULATE→VERIFY) with explicit angle verification and similarity correspondence checks. Other types use 4-step structured approach (UNDERSTAND→PLAN→EXECUTE→VERIFY)."
+
+# データディレクトリ
+data_dir: data    # 入力データが格納されているディレクトリ
+output_dir: output  # 実行結果の出力先ディレクトリ
+
+# データファイル
+train_file: train.jsonl  # 訓練データファイル名
+test_file: test.jsonl    # テストデータファイル名
+
+# モデル設定
+model: gpt-4o-mini  # 使用するOpenAI APIのモデル名
+temperature: 0.0    # 生成の温度パラメータ（0.0で決定的な出力）
+
+# Few-shot設定
+max_fewshot: 5  # 各問題に対して使用するfew-shotの最大数
+
+# 並行実行設定
+concurrent_requests: 20  # テスト推論時の並行リクエスト数
+validation_concurrent_requests: 20  # バリデーション時の並行リクエスト数（安全のため少なめ）
+
+# プロンプト設定
+prompt:
+  # デフォルト（Geometry以外）のプロンプト
+  default:
+    instructions_file: "prompts/instructions_2.txt"
+    input_template_file: "prompts/baseline_input.txt"
+  
+  # Geometry専用のプロンプト
+  geometry:
+    instructions_file: "prompts/instructions_2.txt"
+    input_template_file: "prompts/baseline_input.txt"

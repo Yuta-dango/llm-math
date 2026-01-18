@@ -1,0 +1,10 @@
+The following is a sample answer.
+
+{fewshot_text}
+
+---
+Please solve the following GEOMETRY problem using the systematic approach:
+IDENTIFY → VISUALIZE → THEOREM → CALCULATE → VERIFY
+
+problem:
+{problem_text}
